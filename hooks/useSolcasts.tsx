@@ -1,242 +1,242 @@
-import { useState, useCallback, useEffect } from 'react';
+import { useState, useEffect, useMemo } from 'react';
+import { useAnchorWallet, useConnection } from "@solana/wallet-adapter-react";
+import { Program, AnchorProvider, BN, web3 } from "@coral-xyz/anchor";
+import { PublicKey } from "@solana/web3.js";
+import { getAssociatedTokenAddressSync } from "@solana/spl-token";
 import { Market, Trade, UserProfile } from '../types';
 
-// Mock "Privy" Hook for seamless auth
-export const usePrivy = () => {
-    const [authenticated, setAuthenticated] = useState(false);
-    const [user, setUser] = useState<{ wallet: { address: string } } | null>(null);
-    const [loading, setLoading] = useState(false);
+// --- CONFIGURATION ---
+// PASTE YOUR PROGRAM ID FROM SOLANA PLAYGROUND HERE
+const PROGRAM_ID = new PublicKey("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
-    // Auto-connect if already trusted
-    useEffect(() => {
-        // @ts-ignore
-        if (window.solana && window.solana.isPhantom && window.solana.isConnected) {
-             // @ts-ignore
-             const pubKey = window.solana.publicKey;
-             if (pubKey) {
-                 setUser({ wallet: { address: pubKey.toString() } });
-                 setAuthenticated(true);
-             }
-        }
-    }, []);
-
-    const login = async () => {
-        setLoading(true);
-        try {
-            // @ts-ignore
-            if (window.solana && window.solana.isPhantom) {
-                // @ts-ignore
-                const resp = await window.solana.connect();
-                setUser({ wallet: { address: resp.publicKey.toString() } });
-                setAuthenticated(true);
-            } else {
-                console.warn("Phantom Wallet not detected. Logging in as Demo User.");
-                setUser({ wallet: { address: 'DemoWallet7...3x9' } });
-                setAuthenticated(true);
-            }
-        } catch (err) {
-            console.error(err);
-        } finally {
-            setLoading(false);
-        }
-    };
-
-    return { authenticated, user, login, loading };
-}
+const IDL: any = {
+  "version": "0.1.0",
+  "name": "solcasts",
+  "instructions": [
+    {
+      "name": "initializeMarket",
+      "accounts": [
+        { "name": "market", "isMut": true, "isSigner": false },
+        { "name": "yesMint", "isMut": true, "isSigner": false },
+        { "name": "noMint", "isMut": true, "isSigner": false },
+        { "name": "signer", "isMut": true, "isSigner": true },
+        { "name": "systemProgram", "isMut": false, "isSigner": false },
+        { "name": "tokenProgram", "isMut": false, "isSigner": false },
+        { "name": "rent", "isMut": false, "isSigner": false }
+      ],
+      "args": [
+        { "name": "title", "type": "string" },
+        { "name": "image", "type": "string" }
+      ]
+    },
+    {
+      "name": "buyYes",
+      "accounts": [
+        { "name": "market", "isMut": true, "isSigner": false },
+        { "name": "yesMint", "isMut": true, "isSigner": false },
+        { "name": "noMint", "isMut": true, "isSigner": false },
+        { "name": "userTokenAccount", "isMut": true, "isSigner": false },
+        { "name": "signer", "isMut": true, "isSigner": true },
+        { "name": "tokenProgram", "isMut": false, "isSigner": false },
+        { "name": "systemProgram", "isMut": false, "isSigner": false },
+        { "name": "associatedTokenProgram", "isMut": false, "isSigner": false },
+        { "name": "rent", "isMut": false, "isSigner": false }
+      ],
+      "args": [ { "name": "amountInSol", "type": "u64" } ]
+    },
+    {
+      "name": "buyNo",
+      "accounts": [
+        { "name": "market", "isMut": true, "isSigner": false },
+        { "name": "yesMint", "isMut": true, "isSigner": false },
+        { "name": "noMint", "isMut": true, "isSigner": false },
+        { "name": "userTokenAccount", "isMut": true, "isSigner": false },
+        { "name": "signer", "isMut": true, "isSigner": true },
+        { "name": "tokenProgram", "isMut": false, "isSigner": false },
+        { "name": "systemProgram", "isMut": false, "isSigner": false },
+        { "name": "associatedTokenProgram", "isMut": false, "isSigner": false },
+        { "name": "rent", "isMut": false, "isSigner": false }
+      ],
+      "args": [ { "name": "amountInSol", "type": "u64" } ]
+    }
+  ],
+  "accounts": [
+    {
+      "name": "MarketState",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          { "name": "title", "type": "string" },
+          { "name": "creator", "type": "publicKey" },
+          { "name": "yesReserves", "type": "u64" },
+          { "name": "noReserves", "type": "u64" },
+          { "name": "realSolReserves", "type": "u64" },
+          { "name": "realTokenReserves", "type": "u64" },
+          { "name": "totalVolume", "type": "u64" },
+          { "name": "resolved", "type": "bool" },
+          { "name": "winner", "type": "u8" },
+          { "name": "bump", "type": "u8" }
+        ]
+      }
+    }
+  ]
+};
 
 export const useSolcasts = () => {
-  const { authenticated, user, login, loading: authLoading } = usePrivy();
+  const wallet = useAnchorWallet();
+  const { connection } = useConnection();
+  const [program, setProgram] = useState<Program | null>(null);
   const [markets, setMarkets] = useState<Market[]>([]);
   const [loading, setLoading] = useState(false);
-  const [userTrades, setUserTrades] = useState<Trade[]>([]);
-  const [balance, setBalance] = useState(14.2);
-  
-  // Profile Stats
-  const [userProfile, setUserProfile] = useState<UserProfile>({
-      totalDeposited: 20,
-      totalWithdrawn: 0,
-      realizedPnL: 3.4,
-      unrealizedPnL: 1.2,
-      totalVolume: 45.5
-  });
+  const [balance, setBalance] = useState(0);
 
-  const fetchMarkets = useCallback(async () => {
-      setLoading(true);
-      await new Promise(r => setTimeout(r, 800));
-      if (markets.length === 0) {
-        setMarkets(generateMockMarkets());
-      }
+  // Initialize Anchor Program
+  useEffect(() => {
+    if (wallet) {
+      const provider = new AnchorProvider(connection, wallet, {});
+      const prog = new Program(IDL, PROGRAM_ID, provider);
+      setProgram(prog);
+      
+      // Update Balance
+      connection.getBalance(wallet.publicKey).then(bal => setBalance(bal / 1e9));
+    }
+  }, [wallet, connection]);
+
+  // Fetch Markets from Chain
+  const fetchMarkets = async () => {
+    if (!program) return;
+    setLoading(true);
+    try {
+      // @ts-ignore
+      const allMarkets = await program.account.marketState.all();
+      const formattedMarkets = allMarkets.map((m: any) => {
+        const yesRes = m.account.yesReserves.toNumber();
+        const noRes = m.account.noReserves.toNumber();
+        const total = yesRes + noRes;
+        
+        return {
+          publicKey: m.publicKey.toString(),
+          title: m.account.title,
+          image: 'https://picsum.photos/400/400', // Placeholder or IPFS hash
+          yesPrice: 1 - (yesRes / total), // Inverted bonding curve logic
+          noPrice: 1 - (noRes / total),
+          volume: m.account.totalVolume.toNumber() / 1e9,
+          liquidity: (yesRes + noRes) / 1e9, // Virtual liq
+          createdAt: Date.now(), // Chain doesn't store this, mock for sort
+          creator: m.account.creator.toString(),
+          yesReserves: yesRes,
+          noReserves: noRes,
+          resolved: m.account.resolved,
+          winner: m.account.winner
+        };
+      });
+      setMarkets(formattedMarkets);
+    } catch (err) {
+      console.error("Fetch Error:", err);
+    } finally {
       setLoading(false);
-  }, [markets.length]);
+    }
+  };
 
   useEffect(() => {
     fetchMarkets();
-  }, []);
+  }, [program]);
 
-  const createMarket = useCallback(async (title: string, imageUrl: string) => {
-    if (!authenticated) return;
-    setLoading(true);
+  // Create Market
+  const createMarket = async (title: string, imageUrl: string) => {
+    if (!program || !wallet) return alert("Connect Wallet!");
     
-    setTimeout(() => {
-      const newMarket: Market = {
-        publicKey: `So111${Date.now()}`,
-        title,
-        image: imageUrl || 'https://picsum.photos/400/400',
-        yesPrice: 0.50,
-        noPrice: 0.50,
-        volume: 0,
-        liquidity: 1.0, // Initial liquidity
-        createdAt: Date.now(),
-        creator: user?.wallet.address || 'Unknown',
-        yesReserves: 1_000_000_000,
-        noReserves: 1_000_000_000,
-        resolved: false,
-        winner: 0
-      };
-      setMarkets(prev => [newMarket, ...prev]);
-      setLoading(false);
-    }, 2000);
-  }, [authenticated, user]);
+    try {
+      const [marketPda] = PublicKey.findProgramAddressSync(
+        [Buffer.from("market"), wallet.publicKey.toBuffer()],
+        PROGRAM_ID
+      );
+      const [yesMint] = PublicKey.findProgramAddressSync(
+        [Buffer.from("yes"), marketPda.toBuffer()],
+        PROGRAM_ID
+      );
+      const [noMint] = PublicKey.findProgramAddressSync(
+        [Buffer.from("no"), marketPda.toBuffer()],
+        PROGRAM_ID
+      );
 
-  const buy = useCallback(async (marketPubkey: string, side: 'YES' | 'NO', amountSol: number) => {
-    if (!authenticated) {
-        login();
-        return;
-    };
-
-    setMarkets(prev => prev.map(m => {
-      if (m.publicKey !== marketPubkey) return m;
-
-      const impact = amountSol * 0.02; 
-      
-      let newPrice = side === 'YES' ? m.yesPrice + impact : m.noPrice + impact;
-      newPrice = Math.min(0.99, newPrice);
-      
-      const newOppositePrice = 1 - newPrice;
-
-      const trade: Trade = {
-          type: side === 'YES' ? 'BUY_YES' : 'BUY_NO',
-          amount: amountSol,
-          price: newPrice,
-          tokensReceived: amountSol / newPrice,
-          timestamp: Date.now(),
-          txHash: '5x' + Math.random().toString(36).substring(7)
-      };
-      
-      setUserTrades(prev => [trade, ...prev]);
-      setBalance(b => b - amountSol);
-      
-      // Update stats
-      setUserProfile(p => ({
-          ...p,
-          totalVolume: p.totalVolume + amountSol,
-          unrealizedPnL: p.unrealizedPnL + (amountSol * 0.1) // Simulating random PnL shift
-      }));
-
-      return {
-          ...m,
-          yesPrice: side === 'YES' ? newPrice : newOppositePrice,
-          noPrice: side === 'NO' ? newPrice : newOppositePrice,
-          volume: m.volume + amountSol,
-          liquidity: m.liquidity + amountSol,
-          yesReserves: side === 'YES' ? m.yesReserves - (amountSol * 1000) : m.yesReserves + (amountSol * 1000),
-          noReserves: side === 'NO' ? m.noReserves - (amountSol * 1000) : m.noReserves + (amountSol * 1000)
-      };
-    }));
-  }, [authenticated, login]);
-
-  const resolveMarket = useCallback(async (marketPubkey: string, winner: 1 | 2) => {
-      if(!authenticated) return;
-      setLoading(true);
-      setTimeout(() => {
-          setMarkets(prev => prev.map(m => {
-              if (m.publicKey !== marketPubkey) return m;
-              return { ...m, resolved: true, winner };
-          }));
-          setLoading(false);
-      }, 1500);
-  }, [authenticated]);
-
-  const deposit = async (amount: number) => {
-      setLoading(true);
-      setTimeout(() => {
-        setBalance(b => b + amount);
-        setUserProfile(p => ({...p, totalDeposited: p.totalDeposited + amount}));
-        setLoading(false);
-      }, 1000);
+      const tx = await program.methods
+        .initializeMarket(title, imageUrl)
+        .accounts({
+          market: marketPda,
+          yesMint: yesMint,
+          noMint: noMint,
+          signer: wallet.publicKey,
+          systemProgram: web3.SystemProgram.programId,
+          tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+          rent: web3.SYSVAR_RENT_PUBKEY,
+        })
+        .rpc();
+        
+      console.log("Created!", tx);
+      fetchMarkets(); // Refresh list
+    } catch (err) {
+      console.error(err);
+      alert("Failed to create market");
+    }
   };
 
-  const withdraw = async (amount: number) => {
-    if(amount > balance) return;
-    setLoading(true);
-    setTimeout(() => {
-      setBalance(b => b - amount);
-      setUserProfile(p => ({...p, totalWithdrawn: p.totalWithdrawn + amount}));
-      setLoading(false);
-    }, 1000);
+  // Buy
+  const buy = async (marketPubkey: string, side: 'YES' | 'NO', amountSol: number) => {
+    if (!program || !wallet) return alert("Connect Wallet!");
+
+    try {
+      const marketPda = new PublicKey(marketPubkey);
+      const [yesMint] = PublicKey.findProgramAddressSync(
+        [Buffer.from("yes"), marketPda.toBuffer()],
+        PROGRAM_ID
+      );
+      const [noMint] = PublicKey.findProgramAddressSync(
+        [Buffer.from("no"), marketPda.toBuffer()],
+        PROGRAM_ID
+      );
+
+      const mintToBuy = side === 'YES' ? yesMint : noMint;
+      const userTokenAccount = getAssociatedTokenAddressSync(mintToBuy, wallet.publicKey);
+      const amountLamports = new BN(amountSol * 1_000_000_000);
+
+      const method = side === 'YES' ? 'buyYes' : 'buyNo';
+
+      const tx = await program.methods[method](amountLamports)
+        .accounts({
+          market: marketPda,
+          yesMint: yesMint,
+          noMint: noMint,
+          userTokenAccount: userTokenAccount,
+          signer: wallet.publicKey,
+          tokenProgram: new PublicKey("TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"),
+          systemProgram: web3.SystemProgram.programId,
+          associatedTokenProgram: new PublicKey("ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"),
+          rent: web3.SYSVAR_RENT_PUBKEY,
+        })
+        .rpc();
+
+      console.log("Bought!", tx);
+      fetchMarkets(); // Refresh UI
+    } catch (err) {
+      console.error(err);
+      alert("Trade Failed");
+    }
   };
 
   return {
     markets,
     loading,
-    connected: authenticated,
-    user,
+    connected: !!wallet,
+    user: wallet ? { wallet: { address: wallet.publicKey.toString() } } : null,
     balance,
-    userProfile,
-    connectWallet: login,
+    userProfile: { totalDeposited: 0, totalWithdrawn: 0, realizedPnL: 0, unrealizedPnL: 0, totalVolume: 0 },
+    connectWallet: () => {}, // Handled by WalletMultiButton usually
     createMarket,
     buy,
-    resolveMarket,
-    userTrades,
-    deposit,
-    withdraw
+    resolveMarket: async () => {}, // Admin only
+    userTrades: [], // ToDo: Fetch from events
+    deposit: async () => {}, 
+    withdraw: async () => {}
   };
 };
-
-const generateMockMarkets = (): Market[] => [
-  {
-    publicKey: 'So11111111111111111111111111111111111111112',
-    title: 'Will Bitcoin hit $100k in 2024?',
-    image: 'https://images.unsplash.com/photo-1518546305927-5a555bb7020d?auto=format&fit=crop&w=400&q=80',
-    yesPrice: 0.65,
-    noPrice: 0.35,
-    volume: 1245.5,
-    liquidity: 840.2,
-    createdAt: Date.now(),
-    creator: '845s...12z',
-    yesReserves: 850000000,
-    noReserves: 1150000000,
-    resolved: false,
-    winner: 0
-  },
-  {
-    publicKey: 'So11111111111111111111111111111111111111113',
-    title: 'Will Solana flip Ethereum market cap by Q3?',
-    image: 'https://images.unsplash.com/photo-1620321023374-d1a68fddadb3?auto=format&fit=crop&w=400&q=80',
-    yesPrice: 0.12,
-    noPrice: 0.88,
-    volume: 5402.1,
-    liquidity: 2310.5,
-    createdAt: Date.now() - 100000,
-    creator: '999s...aa1',
-    yesReserves: 1800000000,
-    noReserves: 200000000,
-    resolved: false,
-    winner: 0
-  },
-  {
-    publicKey: 'So11111111111111111111111111111111111111114',
-    title: 'Will GPT-5 be released before December?',
-    image: 'https://images.unsplash.com/photo-1677442136019-21780ecad995?auto=format&fit=crop&w=400&q=80',
-    yesPrice: 0.50,
-    noPrice: 0.50,
-    volume: 12.0,
-    liquidity: 12.0,
-    createdAt: Date.now() - 20000,
-    creator: '777s...bb2',
-    yesReserves: 1000000000,
-    noReserves: 1000000000,
-    resolved: false,
-    winner: 0
-  }
-];
