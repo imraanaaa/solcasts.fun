@@ -1,0 +1,5 @@
+{
+  "name": "Solcasts",
+  "description": "A permissionless prediction market platform on Solana featuring a bonding curve mechanism similar to pump.fun.",
+  "requestFramePermissions": []
+}
